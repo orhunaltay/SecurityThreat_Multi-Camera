@@ -1,26 +1,33 @@
 """Simple message broker abstraction for camera nodes."""
 from __future__ import annotations
 
-import queue
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable
+
+import zmq
 
 
 class CommunicationBroker:
-    """In-memory message broker supporting basic publish/subscribe.
+    """ZeroMQ based publish/subscribe broker.
 
-    This implementation keeps a separate queue for each subscriber to
-    emulate broadcast semantics.
+    A single *PUB* socket is bound during initialisation. Subscribers
+    connect via their own *SUB* sockets created by :meth:`subscribe`.
+    Messages are sent as JSON dictionaries.
     """
 
-    def __init__(self) -> None:
-        self._subscribers: List["queue.Queue[Dict[str, Any]]"] = []
+    def __init__(self, address: str = "tcp://127.0.0.1:5556") -> None:
+        self._context = zmq.Context.instance()
+        self._address = address
+        self._pub_socket = self._context.socket(zmq.PUB)
+        self._pub_socket.bind(address)
 
     # ------------------------------------------------------------------
-    def subscribe(self) -> "queue.Queue[Dict[str, Any]]":
-        """Register a new subscriber and return its queue."""
-        q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
-        self._subscribers.append(q)
-        return q
+    def subscribe(self) -> zmq.Socket:
+        """Connect a new subscriber socket to the broker."""
+        sub = self._context.socket(zmq.SUB)
+        sub.connect(self._address)
+        # Subscribe to all topics
+        sub.setsockopt_string(zmq.SUBSCRIBE, "")
+        return sub
 
     # ------------------------------------------------------------------
     def publish_threat_alert(self, camera_id: str, signature: Any, timestamp: float) -> None:
@@ -59,18 +66,17 @@ class CommunicationBroker:
 
     # ------------------------------------------------------------------
     def _broadcast(self, alert: Dict[str, Any]) -> None:
-        """Push an alert to all subscriber queues."""
-        for q in self._subscribers:
-            q.put(alert)
+        """Send an alert to all subscribers over the network."""
+        self._pub_socket.send_json(alert)
 
     # ------------------------------------------------------------------
     @staticmethod
-    def drain(queue_: "queue.Queue[Dict[str, Any]]") -> Iterable[Dict[str, Any]]:
-        """Yield all currently queued alerts from a subscriber queue."""
+    def drain(socket: zmq.Socket) -> Iterable[Dict[str, Any]]:
+        """Yield all currently queued alerts from a subscriber socket."""
         alerts = []
         while True:
             try:
-                alerts.append(queue_.get_nowait())
-            except queue.Empty:
+                alerts.append(socket.recv_json(flags=zmq.NOBLOCK))
+            except zmq.Again:
                 break
         return alerts
