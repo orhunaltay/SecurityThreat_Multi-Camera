@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import List
+from typing import Generator, List, Union
 
+import cv2
 import numpy as np
 
 from multi_camera.camera_node import CameraNode
@@ -13,9 +14,28 @@ from multi_camera.feature_extractor import FeatureExtractor
 from multi_camera.global_tracker import GlobalTracker
 
 
-def dummy_frame_source() -> np.ndarray:
-    """Mock function returning an empty frame."""
-    return np.zeros((480, 640, 3), dtype=np.uint8)
+def frame_source_generator(source: Union[int, str]) -> Generator[np.ndarray, None, None]:
+    """Yield frames from an RTSP stream or webcam index.
+
+    Args:
+        source: Integer webcam index or RTSP URL understood by ``cv2.VideoCapture``.
+
+    Yields:
+        Consecutive frames read from the video source.
+    """
+
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video source {source}")
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            yield frame
+    finally:
+        cap.release()
 
 
 def start_tracker_loop(broker: CommunicationBroker, tracker: GlobalTracker) -> threading.Thread:
@@ -49,9 +69,18 @@ def main() -> None:
 
     tracker_thread = start_tracker_loop(broker, tracker)
 
+    # Example sources: replace with actual RTSP URLs or device indices
+    sources: List[Union[int, str]] = [0, 1]
+
     cameras: List[CameraNode] = []
-    for i in range(2):  # example with two cameras
-        node = CameraNode(f"camera_{i}", broker, feature_extractor, frame_source=dummy_frame_source)
+    for i, src in enumerate(sources):
+        gen = frame_source_generator(src)
+        node = CameraNode(
+            f"camera_{i}",
+            broker,
+            feature_extractor,
+            frame_source=lambda gen=gen: next(gen, None),
+        )
         node.start()
         cameras.append(node)
 
