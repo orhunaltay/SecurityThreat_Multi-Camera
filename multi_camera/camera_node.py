@@ -8,6 +8,11 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+try:  # pragma: no cover - optional at runtime
+    from ultralytics import YOLO
+except Exception:  # pragma: no cover - fallback when unavailable
+    YOLO = None
+
 from .communication_broker import CommunicationBroker
 from .feature_extractor import FeatureExtractor
 
@@ -74,11 +79,31 @@ class CameraNode(threading.Thread):
 
     # ------------------------------------------------------------------
     def detect_threat(self, frame: np.ndarray) -> Optional[Detection]:
-        """Detect threats in the frame.
+        """Detect threats in the frame using a YOLOv8 model.
 
-        Uses a placeholder detector to return a detection object or None.
+        Args:
+            frame: Image array from the camera.
+
+        Returns:
+            The most confident :class:`Detection` or ``None`` if no detections
+            are available or the detector cannot be loaded.
         """
-        return None  # TODO: integrate detector such as YOLO
+        if YOLO is None:
+            return None
+
+        if getattr(self, "_detector", None) is None:
+            self._detector = YOLO("yolov8n.pt")
+
+        results = self._detector(frame, verbose=False)
+        if not results or results[0].boxes is None or len(results[0].boxes) == 0:
+            return None
+
+        boxes = results[0].boxes.xyxy.cpu().numpy().astype(int)
+        confidences = results[0].boxes.conf.cpu().numpy()
+        best_idx = int(np.argmax(confidences))
+        bbox = tuple(boxes[best_idx])
+        confidence = float(confidences[best_idx])
+        return Detection(bbox=bbox, confidence=confidence)
 
     # ------------------------------------------------------------------
     def extract_features(self, cropped: np.ndarray) -> np.ndarray:
