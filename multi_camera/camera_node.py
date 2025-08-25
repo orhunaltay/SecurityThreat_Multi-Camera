@@ -49,6 +49,10 @@ class CameraNode(threading.Thread):
         self.poll_interval = poll_interval
         self.alert_queue = broker.subscribe()
         self._stop_event = threading.Event()
+        # Buffer of detections and their feature signatures for the
+        # current frame. Each element is a dict with keys
+        # ``bbox`` and ``signature``.
+        self._frame_detections: list[dict[str, Any]] = []
 
     # ------------------------------------------------------------------
     def run(self) -> None:
@@ -66,12 +70,17 @@ class CameraNode(threading.Thread):
         Args:
             frame: Raw image array from the camera.
         """
+        # Reset per-frame detection buffer
+        self._frame_detections = []
+
         detection = self.detect_threat(frame)
         if detection:
             bbox = detection.bbox
             cropped = frame[bbox[1] : bbox[3], bbox[0] : bbox[2]]
             signature = self.extract_features(cropped)
             self.broker.publish_threat_alert(self.camera_id, signature, time.time())
+            # Store the detection information for re-identification checks
+            self._frame_detections.append({"bbox": bbox, "signature": signature})
 
         # Check for matches of existing targets
         for alert in CommunicationBroker.drain(self.alert_queue):
@@ -113,8 +122,23 @@ class CameraNode(threading.Thread):
     # ------------------------------------------------------------------
     def search_for_target(self, frame: np.ndarray, alert: Dict[str, Any]) -> None:
         """Search the current frame for a target described by the alert."""
-        # Placeholder: in real implementation compare features for re-id
-        pass
+        signature = alert.get("signature")
+        if signature is None:
+            return
+
+        # Compare incoming signature against all detections from this frame
+        for det in self._frame_detections:
+            stored_sig = det["signature"]
+            # Cosine similarity between feature vectors
+            denom = np.linalg.norm(stored_sig) * np.linalg.norm(signature) + 1e-8
+            similarity = float(np.dot(stored_sig, signature) / denom)
+            if similarity > 0.85:
+                global_id = alert.get("global_id", "unknown")
+                location = det["bbox"]
+                self.broker.publish_reid_match(
+                    global_id, self.camera_id, location, time.time()
+                )
+                break
 
     # ------------------------------------------------------------------
     def stop(self) -> None:
