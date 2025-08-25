@@ -1,6 +1,7 @@
 """Camera node module for multi-camera security system."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -36,7 +37,7 @@ class CameraNode(threading.Thread):
         frame_source: Optional[Any] = None,
         poll_interval: float = 0.05,
     ) -> None:
-        super().__init__(name=f"CameraNode-{camera_id}", daemon=True)
+        super().__init__(name=f"CameraNode-{camera_id}", daemon=False)
         self.camera_id = camera_id
         self.broker = broker
         self.feature_extractor = feature_extractor
@@ -44,15 +45,25 @@ class CameraNode(threading.Thread):
         self.poll_interval = poll_interval
         self.alert_queue = broker.subscribe()
         self._stop_event = threading.Event()
+        self._logger = logging.getLogger(f"camera.{camera_id}")
 
     # ------------------------------------------------------------------
     def run(self) -> None:
         """Main thread loop processing incoming frames."""
-        while not self._stop_event.is_set():
-            frame = self._get_frame()
-            if frame is not None:
-                self.process_frame(frame)
-            time.sleep(self.poll_interval)
+        self._logger.info("Camera node started")
+        try:
+            while not self._stop_event.is_set():
+                try:
+                    frame = self._get_frame()
+                    if frame is not None:
+                        self.process_frame(frame)
+                except Exception:
+                    self._logger.exception("Error during frame processing")
+                time.sleep(self.poll_interval)
+        except Exception:
+            self._logger.exception("Camera thread crashed")
+        finally:
+            self._logger.info("Camera node stopped")
 
     # ------------------------------------------------------------------
     def process_frame(self, frame: np.ndarray) -> None:
@@ -100,5 +111,9 @@ class CameraNode(threading.Thread):
     def _get_frame(self) -> Optional[np.ndarray]:
         """Retrieve the next frame from the camera source."""
         if callable(self.frame_source):
-            return self.frame_source()
+            try:
+                return self.frame_source()
+            except Exception:
+                self._logger.exception("Frame source failed")
+                self._stop_event.set()
         return None
