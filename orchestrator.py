@@ -1,12 +1,17 @@
 """System orchestrator for multi-camera security tracking."""
 from __future__ import annotations
 
+import argparse
 import threading
 import time
 from typing import Generator, List, Union
 
-import cv2
 import numpy as np
+
+try:  # pragma: no cover - optional dependency
+    import cv2
+except Exception:  # pragma: no cover - handled at runtime
+    cv2 = None
 
 from multi_camera.camera_node import CameraNode
 from multi_camera.communication_broker import CommunicationBroker
@@ -17,12 +22,19 @@ from multi_camera.global_tracker import GlobalTracker
 def frame_source_generator(source: Union[int, str]) -> Generator[np.ndarray, None, None]:
     """Yield frames from an RTSP stream or webcam index.
 
+    If :mod:`cv2` is unavailable the generator emits blank frames so the rest
+    of the system can still be exercised.
+
     Args:
         source: Integer webcam index or RTSP URL understood by ``cv2.VideoCapture``.
 
     Yields:
         Consecutive frames read from the video source.
     """
+
+    if cv2 is None:
+        while True:
+            yield np.zeros((480, 640, 3), dtype=np.uint8)
 
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
@@ -61,16 +73,29 @@ def start_tracker_loop(broker: CommunicationBroker, tracker: GlobalTracker) -> t
     return thread
 
 
-def main() -> None:
+def main(argv: List[str] | None = None) -> None:
     """Initialize system components and start camera nodes."""
+    parser = argparse.ArgumentParser(description="Run the multi-camera demo")
+    parser.add_argument(
+        "sources",
+        nargs="*",
+        default=["0"],
+        help="Camera indices or RTSP URLs (default: 0)",
+    )
+    args = parser.parse_args(argv)
+
+    sources: List[Union[int, str]] = []
+    for src in args.sources:
+        try:
+            sources.append(int(src))
+        except ValueError:
+            sources.append(src)
+
     broker = CommunicationBroker()
     tracker = GlobalTracker()
     feature_extractor = FeatureExtractor()
 
     tracker_thread = start_tracker_loop(broker, tracker)
-
-    # Example sources: replace with actual RTSP URLs or device indices
-    sources: List[Union[int, str]] = [0, 1]
 
     cameras: List[CameraNode] = []
     for i, src in enumerate(sources):
